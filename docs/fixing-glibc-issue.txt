@@ -1,0 +1,345 @@
+```shell
+docker run \
+    --rm \
+    -v $(pwd):/opt/LightGBM \
+    --workdir /opt/LightGBM \
+    --env AZURE='true' \
+    --env BUILD_SOURCESDIRECTORY=/opt/LightGBM \
+    --env BUILD_DIRECTORY=/opt/LightGBM \
+    --env CONDA=/root/miniforge \
+    --env CONDA_ENV='test-env' \
+    --env DEBIAN_FRONTENDD=noninteractive \
+    --env IN_UBUNTU_LATEST_CONTAINER='true' \
+    --env LGB_VER=$(head -n 1 VERSION.txt) \
+    --env OS_NAME=linux \
+    --env PYTHON_VERSION='3.10' \
+    --env SETUP_CONDA='true' \
+    -it ubuntu@sha256:2a7dffab37165e8b4f206f61cfd984f8bb279843b070217f6ad310c9c31c9c7c \
+    /bin/bash
+
+export PATH="${CONDA}/bin:${PATH}"
+apt-get update
+apt-get install \
+    --no-install-recommends \
+    -y \
+        sudo
+
+/bin/bash ${BUILD_SOURCESDIRECTORY}/.ci/setup.sh
+
+TASK=regular \
+/bin/bash ${BUILD_SOURCESDIRECTORY}/.ci/test.sh
+```
+
+Tests failed like this
+
+> E   OSError: /home/AzDevOps_azpcontainer/miniforge/envs/test-env/lib/python3.10/site-packages/scipy/sparse/../../../../libstdc++.so.6: version `GLIBCXX_3.4.30' not found (required by /home/AzDevOps_azpcontainer/.local/lib/python3.10/site-packages/lightgbm/lib_lightgbm.so)
+
+And from that point forward, it's possible to reproduce this without the tests, just by trying to load `lightgbm`.
+
+```shell
+python -c "import lightgbm"
+```
+
+Ok, so I poked around at the available versions.
+
+```shell
+find / -name 'libstdc++.so.6'
+```
+
+I found 3:
+
+```shell
+/root/miniforge/envs/test-env/lib/libstdc++.so.6
+/root/miniforge/pkgs/libstdcxx-ng-11.2.0-he4da1e4_16/lib/libstdc++.so.6
+/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+```
+
+Used the following to figure out which ones had 3.4.30.
+
+```shell
+strings /root/miniforge/envs/test-env/lib/libstdc++.so.6 \
+| grep -E '^GLIBCXX_3\.4\.30'
+
+strings /root/miniforge/pkgs/libstdcxx-ng-11.2.0-he4da1e4_16/lib/libstdc++.so.6 \
+| grep -E '^GLIBCXX_3\.4\.30'
+
+strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
+| grep -E '^GLIBCXX_3\.4\.30'
+```
+
+Then ran the following to check which `libstdc++.so.6` LightGBM linked against.
+
+```shell
+ldd lib_lightgbm.so
+```
+
+```text
+linux-vdso.so.1 (0x00007fff77fbd000)
+libstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007f2e68fe1000)
+libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007f2e68efa000)
+libgomp.so.1 => /lib/x86_64-linux-gnu/libgomp.so.1 (0x00007f2e68eb0000)
+libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f2e68e90000)
+libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f2e68c68000)
+    /lib64/ld-linux-x86-64.so.2 (0x00007f2e696a9000)
+```
+
+So it looks like the problem is that LightGBM was built linked against the one in `/usr/lib/x86_64-linux-gnu/` (probablly because it was compiled with `/usr/bin/gcc`), which contains a different set of symbols than the conda ones.
+
+More details.
+
+```shell
+ldd -v lib_lightgbm.so
+```
+
+```text
+root@7d067a6c1661:/opt/LightGBM# ldd -v lib_lightgbm.so
+    linux-vdso.so.1 (0x00007fff289ab000)
+    libstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007f6fb2704000)
+    libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007f6fb261d000)
+    libgomp.so.1 => /lib/x86_64-linux-gnu/libgomp.so.1 (0x00007f6fb25d3000)
+    libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f6fb25b3000)
+    libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f6fb238b000)
+    /lib64/ld-linux-x86-64.so.2 (0x00007f6fb2dcc000)
+
+    Version information:
+    ./lib_lightgbm.so:
+        ld-linux-x86-64.so.2 (GLIBC_2.3) => /lib64/ld-linux-x86-64.so.2
+        libgomp.so.1 (GOMP_4.0) => /lib/x86_64-linux-gnu/libgomp.so.1
+        libgomp.so.1 (GOMP_4.5) => /lib/x86_64-linux-gnu/libgomp.so.1
+        libgomp.so.1 (OMP_1.0) => /lib/x86_64-linux-gnu/libgomp.so.1
+        libgomp.so.1 (GOMP_1.0) => /lib/x86_64-linux-gnu/libgomp.so.1
+        libgcc_s.so.1 (GCC_3.0) => /lib/x86_64-linux-gnu/libgcc_s.so.1
+        libm.so.6 (GLIBC_2.27) => /lib/x86_64-linux-gnu/libm.so.6
+        libm.so.6 (GLIBC_2.29) => /lib/x86_64-linux-gnu/libm.so.6
+        libm.so.6 (GLIBC_2.2.5) => /lib/x86_64-linux-gnu/libm.so.6
+        libstdc++.so.6 (CXXABI_1.3.7) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.20) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (CXXABI_1.3.8) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (CXXABI_1.3.3) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.29) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.18) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.26) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.9) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.11) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (CXXABI_1.3) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.14) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.30) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.21) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (CXXABI_1.3.5) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.22) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (CXXABI_1.3.13) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4.19) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libstdc++.so.6 (GLIBCXX_3.4) => /lib/x86_64-linux-gnu/libstdc++.so.6
+        libc.so.6 (GLIBC_2.32) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.4) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.14) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.3) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.2.5) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.3.4) => /lib/x86_64-linux-gnu/libc.so.6
+    /lib/x86_64-linux-gnu/libstdc++.so.6:
+        libm.so.6 (GLIBC_2.2.5) => /lib/x86_64-linux-gnu/libm.so.6
+        ld-linux-x86-64.so.2 (GLIBC_2.3) => /lib64/ld-linux-x86-64.so.2
+        libgcc_s.so.1 (GCC_4.2.0) => /lib/x86_64-linux-gnu/libgcc_s.so.1
+        libgcc_s.so.1 (GCC_3.4) => /lib/x86_64-linux-gnu/libgcc_s.so.1
+        libgcc_s.so.1 (GCC_3.3) => /lib/x86_64-linux-gnu/libgcc_s.so.1
+        libgcc_s.so.1 (GCC_3.0) => /lib/x86_64-linux-gnu/libgcc_s.so.1
+        libc.so.6 (GLIBC_2.14) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.6) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.33) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.25) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.18) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.16) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.32) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.7) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.3.4) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.17) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.3) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.3.2) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.34) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.2.5) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.4) => /lib/x86_64-linux-gnu/libc.so.6
+    /lib/x86_64-linux-gnu/libm.so.6:
+        ld-linux-x86-64.so.2 (GLIBC_PRIVATE) => /lib64/ld-linux-x86-64.so.2
+        libc.so.6 (GLIBC_2.4) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.2.5) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_PRIVATE) => /lib/x86_64-linux-gnu/libc.so.6
+    /lib/x86_64-linux-gnu/libgomp.so.1:
+        libc.so.6 (GLIBC_2.3) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.14) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.4) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.6) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.17) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.32) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.3.4) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.34) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.2.5) => /lib/x86_64-linux-gnu/libc.so.6
+    /lib/x86_64-linux-gnu/libgcc_s.so.1:
+        libc.so.6 (GLIBC_2.35) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.14) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.34) => /lib/x86_64-linux-gnu/libc.so.6
+        libc.so.6 (GLIBC_2.2.5) => /lib/x86_64-linux-gnu/libc.so.6
+    /lib/x86_64-linux-gnu/libc.so.6:
+        ld-linux-x86-64.so.2 (GLIBC_2.2.5) => /lib64/ld-linux-x86-64.so.2
+        ld-linux-x86-64.so.2 (GLIBC_2.3) => /lib64/ld-linux-x86-64.so.2
+        ld-linux-x86-64.so.2 (GLIBC_PRIVATE) => /lib64/ld-linux-x86-64.so.2
+```
+
+Here's the relevant `ctypes` code where `ctypes.cdll.LoadLibrary()` where it searches for libraries.
+
+https://github.com/python/cpython/blob/39a54ba63850e081a4a5551a773df5b4d5b1d3cd/Modules/_ctypes/callproc.c#L1334--LL1383
+
+Note that it limits the directories that are searched, using something called `load_flags`.
+
+From https://github.com/python/cpython/blob/f4c03484da59049eb62a9bf7777b963e2267d187/Modules/_ctypes/darwin/README#L15-LL18
+
+> The paths searched are those specified in the environment variables LD_LIBRARY_PATH and DYLD_LIBRARY_PATH plus /lib, /usr/local/lib and /usr/lib or the path specified in the environment variable DYLD_FALLBACK_LIBRARY_PATH.
+
+https://github.com/python/cpython/blame/dc2d8404a3ab6288ce112c71da8c65c34cd3087e/Doc/library/ctypes.rst#L1271-L1277
+
+> On Linux, :func:`find_library` tries to run external programs
+(``/sbin/ldconfig``, ``gcc``, ``objdump`` and ``ld``) to find the library file.
+It returns the filename of the library file.
+
+> On Linux, the value of the environment variable ``LD_LIBRARY_PATH`` is used when searching for libraries, if a library cannot be found by any other means.
+
+I can see some more evidence that `ctypes` is finding the conda one first.
+
+```shell
+which python
+# /root/miniforge/envs/test-env/bin/python
+
+python -c \
+    "from ctypes.util import find_library; print(find_library('libstdc++.so.6'))"
+
+# /root/miniforge/envs/test-env/lib/libstdc++.so.6
+```
+
+All of that logic is defined over in https://github.com/python/cpython/blob/f4c03484da59049eb62a9bf7777b963e2267d187/Lib/ctypes/util.py.
+
+As you can see, it has forks of `if-else` logic for many different operating systems.
+
+On Ubuntu, it will try this:
+
+1. Search in the results of `ldconfig -p` (https://github.com/python/cpython/blob/f4c03484da59049eb62a9bf7777b963e2267d187/Lib/ctypes/util.py#L289)
+2. If not found with that, use `gcc` to compile a test program linking the named library, and see what it includes (https://github.com/python/cpython/blob/f4c03484da59049eb62a9bf7777b963e2267d187/Lib/ctypes/util.py#L109-L139)
+3. If STILL not found, use `ld` to check paths in environment variable `LD_LIBRARY_PATH` (https://github.com/python/cpython/blob/f4c03484da59049eb62a9bf7777b963e2267d187/Lib/ctypes/util.py#L303-L307)
+
+I tried stepping into that code further.
+
+```python
+from ctypes.util import (
+    _findLib_gcc,
+    _findLib_ld,
+    _findSoname_ldconfig,
+    _get_soname,
+    find_library
+)
+
+lib_name = "libstdc++.so.6"
+
+find_library(lib_name)
+# /root/miniforge/envs/test-env/lib/libstdc++.so.6
+
+_findSoname_ldconfig(lib_name)
+# None
+
+_findLib_gcc(lib_name)
+# None
+
+_findLib_ld(lib_name)
+# None
+```
+
+I was pretty surprised that this wasn't working, so dumped the source of `find_library()` to check if the version I had was different from what I saw on GitHub.
+
+```python
+import inspect
+lines = inspect.getsource(find_library)
+print(lines)
+```
+
+It was!
+
+```python
+def find_library(name):
+    # See issue #9998
+    # Yes calling _findLib_prefix twice is deliberate, because _get_soname ditches
+    # the full path.
+    # When objdump is unavailable this returns None
+    so_name = _get_soname(_findLib_prefix(name)) or name
+    if so_name != name:
+        return _findLib_prefix(so_name) or \
+               _findLib_prefix(name) or \
+               _findSoname_ldconfig(name) or \
+               _get_soname(_findLib_gcc(name)) or _get_soname(_findLib_ld(name))
+    else:
+         return _findLib_prefix(name) or \
+                _findSoname_ldconfig(name) or \
+                _get_soname(_findLib_gcc(name)) or _get_soname(_findLib_ld(name))
+```
+
+Pretty interesting...
+
+That's what I see in the source for this package.
+
+```shell
+cat /root/miniforge/envs/test-env/lib/python3.10/ctypes/util.py
+```
+
+That doesn't match what I see on the GitHub source for `ctypes`.
+Searching GitHub for that code, I found a bunch of what looked like `.patch` files, so I thought "ok, maybe miniconda is patching `ctypes` to work with its own patterns for loading libraries".
+
+https://github.com/search?p=1&q=%22twice+is+deliberate%22&type=Code
+
+Looked for those patches in my local installation...and found a bunch!
+
+```shell
+find /root/miniforge -name '*.patch' \
+| grep find
+```
+
+```text
+/root/miniforge/pkgs/python-3.9.10-h85951f9_2_cpython/info/recipe/parent/patches/0007-Fix-find_library-so-that-it-looks-in-sys.prefix-lib-.patch
+/root/miniforge/pkgs/python-3.10.4-h2660328_0_cpython/info/recipe/parent/patches/0007-Fix-find_library-so-that-it-looks-in-sys.prefix-lib-.patch
+```
+
+BOOM!
+
+Looking at that patch, it looks like `conda` introduced a patch to `ctypes` to only look in the conda environment first!
+
+`conda` sets `sys.prefix` to a path like `/root/miniforge/envs/test-env`.
+
+```shell
+python -c "import sys; print(sys.prefix)"
+# /root/miniforge/envs/test-env
+```
+
+And since that's the first thing checked, no other fallback mechanisms will work. The first `libstdc++.so.6` found in the conda environment will be used, and if LightGBM was compiled with a non-conda compiler, there's a risk of this GLIBCXX error.
+
+So! This error will show up under this combination of circumstances:
+
+* installing `lightgbm` using conda-provided Python, but CMake finds a non-conda compiler
+* that compiler links against a `libstdc++` using a newer `GLIBCXX` version than is available in the first `libstdc++` library found within conda's files
+
+`conda` doesn't come with `gcc` installed by default (you'd have to `conda install libgcc`), so even just saying "use conda's compilers" isn't a great solution.
+
+I think, by the way, this could show up with any library found by CMake outside of this conda environment (like OpenMP).
+
+However, for this one it's extra bad because `libxtdc++` and `gcc` are so tightly related. So just some trickery with `LD_LIBRARY_PATH` or whatever won't be sufficient.
+
+So I think one solution to this is just to always use a slightly-older version of `gcc` than whatever you get from `conda`?
+
+## References
+
+* https://github.com/ContinuumIO/anaconda-issues/issues/7284
+    - that points to this documentation explaining a bit more about how `conda`'s compiler packages work (https://docs.conda.io/projects/conda-build/en/latest/resources/compiler-tools.html)
+    - conda-forge docs (https://conda-forge.org/docs/maintainer/knowledge_base.html#compilers) link to that same page
+    - a bunch seem to come from https://github.com/conda-forge/ctng-compilers-feedstock
+* https://conda.io/projects/conda-build/en/latest/resources/use-shared-libraries.html
+    - "Including conda environment paths in LD_LIBRARY_PATH or DYLD_LIBRARY_PATH is not recommended."
+* glibc uses "symbol versioning": https://stackoverflow.com/questions/2856438/how-can-i-link-to-a-specific-glibc-version
+    - description of that strategy, at http://gcc.gnu.org/onlinedocs/libstdc++/manual/abi.html
+* static linking doesn't actually help with this problem: https://stackoverflow.com/questions/57476533/why-is-statically-linking-glibc-discouraged/57478728#57478728
+* a bunch of information on using CMake with conda: https://conda-forge.org/docs/maintainer/knowledge_base.html#using-cmake
+* why there's only one `libstdc++.so.6` on the system: https://stackoverflow.com/a/2325933/3986677
+

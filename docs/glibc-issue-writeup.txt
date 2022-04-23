@@ -1,0 +1,407 @@
+
+The following minimal example on Ubuntu 22.04 is sufficient to reproduce this issue.
+
+Ok first, set up some system-level dependencies.
+
+```shell
+docker run \
+    --rm \
+    --workdir /usr/local/src \
+    --env CONDA=/root/miniforge \
+    --env CONDA_ENV='test-env' \
+    --env DEBIAN_FRONTEND=noninteractive \
+    --env PYTHON_VERSION='3.10' \
+    -it ubuntu@sha256:2a7dffab37165e8b4f206f61cfd984f8bb279843b070217f6ad310c9c31c9c7c \
+    /bin/bash
+
+export PATH="${CONDA}/bin:${PATH}"
+
+apt-get update
+apt-get install \
+    --no-install-recommends \
+    -y \
+        sudo
+
+sudo apt-get install \
+    --no-install-recommends \
+    -y \
+        locales \
+        software-properties-common
+
+export LANG="en_US.UTF-8"
+sudo locale-gen ${LANG}
+sudo update-locale LANG=${LANG}
+
+sudo apt-get install \
+    --no-install-recommends \
+    -y \
+        apt-utils \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        git \
+        iputils-ping \
+        jq \
+        libicu-dev \
+        libcurl4 \
+        libssl-dev \
+        libunwind8 \
+        locales \
+        netcat \
+        unzip \
+        zip
+```
+
+After this, checked the version of Ubuntu, and which available implementations of `libstdc++.so.6` existed, the version of `gcc`, and what versions of `GLIBCXX` that implementation of `libstdc++.so.6` supported.
+
+```shell
+find / -name 'libstdc++.so.6'
+# /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+
+gcc --version
+# gcc (Ubuntu 11.2.0-19ubuntu1) 11.2.0
+
+strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
+| grep -E '^GLIBCXX_[0-9]+' \
+| sort -u -r
+# GLIBCXX_3.4.9
+# GLIBCXX_3.4.8
+# GLIBCXX_3.4.7
+# GLIBCXX_3.4.6
+# GLIBCXX_3.4.5
+# GLIBCXX_3.4.4
+# GLIBCXX_3.4.30
+# GLIBCXX_3.4.3
+# GLIBCXX_3.4.29
+# GLIBCXX_3.4.28
+# GLIBCXX_3.4.27
+# GLIBCXX_3.4.26
+# GLIBCXX_3.4.25
+# GLIBCXX_3.4.24
+# GLIBCXX_3.4.23
+# GLIBCXX_3.4.22
+# GLIBCXX_3.4.21
+# GLIBCXX_3.4.20
+# GLIBCXX_3.4.2
+# GLIBCXX_3.4.19
+# GLIBCXX_3.4.18
+# GLIBCXX_3.4.17
+# GLIBCXX_3.4.16
+# GLIBCXX_3.4.15
+# GLIBCXX_3.4.14
+# GLIBCXX_3.4.13
+# GLIBCXX_3.4.12
+# GLIBCXX_3.4.11
+# GLIBCXX_3.4.10
+# GLIBCXX_3.4.1
+# GLIBCXX_3.4
+```
+
+Next, setup `conda`.
+
+```shell
+ARCH=$(uname -m)
+curl \
+    -sL \
+    -o miniforge.sh \
+    https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-${ARCH}.sh
+
+sh miniforge.sh -b -p $CONDA
+conda config --set always_yes yes --set changeps1 no
+conda update -q -y conda
+```
+
+Before installing any other packages, check all the `gcc` and GLIBCXX stuff again.
+
+```shell
+find / -name 'libstdc++.so.6'
+# /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+
+gcc --version
+# gcc (Ubuntu 11.2.0-19ubuntu1) 11.2.0
+
+strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
+| grep -E '^GLIBCXX_[0-9]+' \
+| sort -u -r
+# GLIBCXX_3.4.9
+# GLIBCXX_3.4.8
+# GLIBCXX_3.4.7
+# GLIBCXX_3.4.6
+# GLIBCXX_3.4.5
+# GLIBCXX_3.4.4
+# GLIBCXX_3.4.30
+# GLIBCXX_3.4.3
+# GLIBCXX_3.4.29
+# GLIBCXX_3.4.28
+# GLIBCXX_3.4.27
+# GLIBCXX_3.4.26
+# GLIBCXX_3.4.25
+# GLIBCXX_3.4.24
+# GLIBCXX_3.4.23
+# GLIBCXX_3.4.22
+# GLIBCXX_3.4.21
+# GLIBCXX_3.4.20
+# GLIBCXX_3.4.2
+# GLIBCXX_3.4.19
+# GLIBCXX_3.4.18
+# GLIBCXX_3.4.17
+# GLIBCXX_3.4.16
+# GLIBCXX_3.4.15
+# GLIBCXX_3.4.14
+# GLIBCXX_3.4.13
+# GLIBCXX_3.4.12
+# GLIBCXX_3.4.11
+# GLIBCXX_3.4.10
+# GLIBCXX_3.4.1
+# GLIBCXX_3.4
+```
+
+Answers are totally unchanged.
+Installing and loading `lightgbm` in the base conda environment will work without issue.
+That's because there still isn't a `libstdc++.so.6` in conda's installation.
+
+```shell
+git clone \
+    --recursive \
+    https://github.com/microsoft/LightGBM.git
+
+cd ./LightGBM
+git checkout 416ecd5a8de1b2b9225ded3c919cb0d40ec0d9bd
+
+cd python-package
+pip install .
+
+which python
+# /root/miniforge/bin/python
+
+python -c "import lightgbm; print(lightgbm.__version__)"
+# 3.3.2.99
+
+python -c \
+    "from ctypes.util import find_library; print(find_library('libstdc++.so.6'))"
+# None
+
+conda env export --name base
+
+find / -name 'libstdc++.so.6'
+# /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+```
+
+Checking which versions of `GLIBCXX` were required when compiling `lightgbm`.
+
+```shell
+LIB_LIGHTGBM_IN_CONDA=$(
+    find /root/miniforge -name 'lib_lightgbm.so' \
+    | head -1
+)
+ldd -v \
+    "${LIB_LIGHTGBM_IN_CONDA}"
+```
+
+So where do problems start?
+Once you introduce any dependency into the `conda` environment which pulls in another copy of `libstdc++.so.6`, if that copy is missing any of the versions of `GLIBCXX` that were used when compiling `lib_lightgbm.so`.
+
+For example, let's install `dask` and `distributed`, which end up pulling in a dependency on `libstdcxx-ng`.
+
+```shell
+conda install -y -n base \
+    dask \
+    distributed
+```
+
+Now loading `lightgbm` fails!
+
+> OSError: /root/miniforge/bin/../lib/libstdc++.so.6: version `GLIBCXX_3.4.30' not found (required by /usr/local/src/LightGBM/python-package/compile/lib_lightgbm.so)
+
+And that's because of the following combination of factors
+
+1. there's now a `libstdc++.so.6` in the conda environment
+    - ```shell
+      find / -name 'libstdc++.so.6'
+      # /root/miniforge/lib/libstdc++.so.6
+      # /root/miniforge/pkgs/libstdcxx-ng-11.2.0-he4da1e4_16/lib/libstdc++.so.6
+      # /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+      ```
+
+2. that's the first thing loaded by `ctypes.cdll.LoadLibrary()`.
+    -  ```shell
+       python -c \
+           "from ctypes.util import find_library; print(find_library('libstdc++.so.6'))
+       # /root/miniforge/lib/libstdc++.so.6
+       ```
+
+3. that doesn't contain all the same `GLIBCXX` versions as the one the `lib_lightgbm.so` was compiled against.
+    - ```shell
+      strings /root/miniforge/lib/libstdc++.so.6 \
+      | grep -E '^GLIBCXX_[0-9]+' \
+      | sort -u -r
+      ```
+
+This library ends up being found because `conda` patches `ctypes` to first look in the prefix of the active conda environment.
+
+```shell
+find /root/miniforge -name '*.patch' \
+| grep find_library
+# /root/miniforge/pkgs/python-3.9.10-h85951f9_2_cpython/info/recipe/parent/patches/0007-Fix-find_library-so-that-it-looks-in-sys.prefix-lib-.patch
+
+cat /root/miniforge/pkgs/python-3.9.10-h85951f9_2_cpython/info/recipe/parent/patches/0007-Fix-find_library-so-that-it-looks-in-sys.prefix-lib-.patch
+```
+
+```text
+---
+ Lib/ctypes/macholib/dyld.py |  4 ++++
+ Lib/ctypes/util.py          | 27 ++++++++++++++++++++++++---
+ 2 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/Lib/ctypes/macholib/dyld.py b/Lib/ctypes/macholib/dyld.py
+index 1c3f8fd38b..82a4b4fd58 100644
+--- a/Lib/ctypes/macholib/dyld.py
++++ b/Lib/ctypes/macholib/dyld.py
+@@ -93,6 +93,10 @@ def dyld_executable_path_search(name, executable_path=None):
+     # If we haven't done any searching and found a library and the
+     # dylib_name starts with "@executable_path/" then construct the
+     # library name.
++    if not executable_path:
++        import sys
++        if sys.prefix:
++            executable_path = os.path.join(sys.prefix, 'bin')
+     if name.startswith('@executable_path/') and executable_path is not None:
+         yield os.path.join(executable_path, name[len('@executable_path/'):])
+
+diff --git a/Lib/ctypes/util.py b/Lib/ctypes/util.py
+index 0c2510e161..72b46cc481 100644
+--- a/Lib/ctypes/util.py
++++ b/Lib/ctypes/util.py
+@@ -70,7 +70,8 @@ if os.name == "nt":
+ elif os.name == "posix" and sys.platform == "darwin":
+     from ctypes.macholib.dyld import dyld_find as _dyld_find
+     def find_library(name):
+-        possible = ['lib%s.dylib' % name,
++        possible = ['@executable_path/../lib/lib%s.dylib' % name,
++                    'lib%s.dylib' % name,
+                     '%s.dylib' % name,
+                     '%s.framework/%s' % (name, name)]
+         for name in possible:
+@@ -324,10 +325,30 @@ elif os.name == "posix":
+                 pass  # result will be None
+             return result
+
++        def _findLib_prefix(name):
++            if not name:
++                return None
++            for fullname in (name, "lib%s.so" % (name)):
++                path = os.path.join(sys.prefix, 'lib', fullname)
++                if os.path.exists(path):
++                    return path
++            return None
++
+         def find_library(name):
+             # See issue #9998
+-            return _findSoname_ldconfig(name) or \
+-                   _get_soname(_findLib_gcc(name)) or _get_soname(_findLib_ld(name))
++            # Yes calling _findLib_prefix twice is deliberate, because _get_soname ditches
++            # the full path.
++            # When objdump is unavailable this returns None
++            so_name = _get_soname(_findLib_prefix(name)) or name
++            if so_name != name:
++                return _findLib_prefix(so_name) or \
++                       _findLib_prefix(name) or \
++                       _findSoname_ldconfig(name) or \
++                       _get_soname(_findLib_gcc(name)) or _get_soname(_findLib_ld(name))
++            else:
++                 return _findLib_prefix(name) or \
++                        _findSoname_ldconfig(name) or \
++                        _get_soname(_findLib_gcc(name)) or _get_soname(_findLib_ld(name))
+
+ ################################################################
+ # test code
+--
+2.35.0
+```
+
+-----------
+
+## Workarounds that don't require changes to LightGBM
+
+1. Use a much older version of `gcc`, such that it's unlikely that it'll contain `GLIBCXX` symbols from versions newer than those found in whatever `libstdc++.so.6` `conda` might pull in.
+
+```shell
+apt-get install -y \
+    gcc-9 \
+    g++-9
+
+cd /usr/local/src/LightGBM
+rm -f ./lib_lightgbm.so
+rm -rf ./build
+pip uninstall -y lightgbm
+
+mkdir build
+cd build
+CC=gcc-9 \
+CXX=g++-9 \
+cmake .. && \
+make -j2
+
+cd ../python-package
+python setup.py install --precompile
+
+LIB_LIGHTGBM_IN_CONDA=$(
+    find /root/miniforge -name 'lib_lightgbm.so' \
+    | head -1
+)
+ldd -v \
+    "${LIB_LIGHTGBM_IN_CONDA}"
+```
+
+3. Use `conda`'s compilers, just as is done when preparing the package on `conda-forge`.
+    - https://github.com/conda-forge/lightgbm-feedstock/blob/47d0549bb2e77637e44957a6a0bd7cd51288bb2b/recipe/meta.yaml#L25-L26
+    - https://docs.conda.io/projects/conda-build/en/latest/resources/compiler-tools.html
+
+## Things I tried that did not work
+
+* using a much older version of `gcc`, such that it's unlikely that it'll contain `GLIBCXX` symbols from versions newer than those found in whatever `libstdc++.so.6` `conda` might pull in.
+    - ```shell
+        apt-get install -y \
+            gcc-9 \
+            g++-9
+
+        cd /usr/local/src/LightGBM
+        rm -f ./lib_lightgbm.so
+        rm -rf ./build
+        pip uninstall -y lightgbm
+
+        mkdir build
+        cd build
+        CC=gcc-9 \
+        CXX=g++-9 \
+        cmake .. && \
+        make -j2
+
+        cd ../python-package
+        python setup.py install --precompile
+
+        LIB_LIGHTGBM_IN_CONDA=$(
+            find /root/miniforge -name 'lib_lightgbm.so' \
+            | head -1
+        )
+        ldd -v \
+            "${LIB_LIGHTGBM_IN_CONDA}"
+        ```
+* adding conda's `lib/` path to `LD_LIBRARY_PATH` before compiling LightGBM
+    - ```shell
+      CONDA_HOME=$(
+          conda info --json \
+          | jq -r .'"root_prefix"'
+      )
+      LD_LIBRARY_PATH="${CONDA_HOME}/lib:${LD_LIBRARY_PATH}" \
+      cmake .. && \
+      make -j2
+      cd ../python-package
+      python setup.py install --precompile
+      python -c "import lightgbm"
+      ```
+
+## Changes to LightGBM which could help avoid this situation
+
+
