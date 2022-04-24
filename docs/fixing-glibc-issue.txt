@@ -83,7 +83,7 @@ libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f2e68c68000)
     /lib64/ld-linux-x86-64.so.2 (0x00007f2e696a9000)
 ```
 
-So it looks like the problem is that LightGBM was built linked against the one in `/usr/lib/x86_64-linux-gnu/` (probablly because it was compiled with `/usr/bin/gcc`), which contains a different set of symbols than the conda ones.
+So it looks like the problem is that LightGBM was built linked against the one in `/usr/lib/x86_64-linux-gnu/` (probably because it was compiled with `/usr/bin/gcc`), which contains a different set of symbols than the conda ones.
 
 More details.
 
