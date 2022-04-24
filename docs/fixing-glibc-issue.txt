@@ -342,4 +342,6 @@ So I think one solution to this is just to always use a slightly-older version o
 * static linking doesn't actually help with this problem: https://stackoverflow.com/questions/57476533/why-is-statically-linking-glibc-discouraged/57478728#57478728
 * a bunch of information on using CMake with conda: https://conda-forge.org/docs/maintainer/knowledge_base.html#using-cmake
 * why there's only one `libstdc++.so.6` on the system: https://stackoverflow.com/a/2325933/3986677
-
+* `run_exports` concept in conda builds: https://docs.conda.io/projects/conda-build/en/latest/resources/define-metadata.html#export-runtime-requirements
+* this looks extremely relevant:
+    - https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/manual/faq.html#faq.how_to_set_paths
