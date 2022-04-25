@@ -56,12 +56,17 @@ docker run \
 
 ### Root Cause
 
-I believe the root cause of this issue is something like the following:
+TThe root cause of this issue is as follows:
 
-> When `lib_lightgbm.so` is compiled with `gcc`, the compiler links against a C++ implementation in `libstdc++.so.6`.
+> When `lib_lightgbm.so` is compiled with `gcc` not managed by `conda`, the compiler links against a C++ implementation in a location like `/usr/lib/x86_64-linux-gnu/libstdc++.so.6`.
 >
-> That linking is *dynamic*...it's expected that when the library is loaded, it'll link again to `libstdc++.so.6`.
+> That linking is *dynamic*...it's expected that when the library is loaded in a Python session, `libstdc++.so.6` will be loaded at runtime.
 >
+> `conda`'s distribution of Python
+>
+> Using a `conda` distribution of CPython-based Python, when `lib_lightgbm.so` is loaded using `ctypes.cdll.LoadLibrary()`, if there are any `libstdc++.so.6` in `conda`'s lib paths, one of those will be loaded instead of the one in `/usr/lib`.
+>
+> This is because `conda` alters `ctypes`'s behavior to prefer directories managed by `conda`.
 
 As described in https://gcc.gnu.org/onlinedocs/libstdc++/manual/abi.html, GNU C++ is architected for forward compatibility.
 
@@ -71,7 +76,24 @@ So if the C++ compiler links against a given `libstdc++.so` at build time, then 
 
 So the issue here comes in when the `libstdc++.so` version available from the operating system (the one linked to by like `/usr/bin/g++`, for example) is newer than whatever ones are found in a given conda environment when loading the library.
 
-`conda` makes this situation much more likely via its patch to `ctypes`. `conda` ships with a patch to `ctypes` that says "when `ctypes.util.find_library()` looks for a DLL, first look within this `conda` environment".
+There are two mechanisms by which errors like this can result from trying to load a `.so`/ `.dll` in `conda`'s Python:
+
+1. via `conda`'s patches to `ctypes` and Python itself
+2. beccause of the `RPATH` values se on `conda`'s 
+
+`conda` makes this situation much more likely via its patch(es?) to `ctypes`.
+
+```shell
+LIB_LIGHTGBM='/root/miniforge/lib/python3.9/site-packages/lightgbm/lib_lightgbm.so'
+
+# fails with conda Python
+/root/miniforge/bin/python -c \
+    "import ctypes; ctypes.cdll.LoadLibrary('${LIB_LIGHTGBM}')"
+
+# succeeds with non-conda Python
+/usr/bin/python3 -c \
+    "import ctypes; ctypes.cdll.LoadLibrary('${LIB_LIGHTGBM}')"
+```
 
 ### Research
 
@@ -148,14 +170,79 @@ ldd -v \
     "${LIB_LIGHTGBM_IN_CONDA}"
 ```
 
-2. Inspect `lib_lightgbm.so` to figure out where the compiler found certain libraries, and copy any found from outside `conda` libraries into `conda`'s `lib/` directory.
+2. Set `LD_PRELOAD` prior to loading `libstdc++.so.6`.
 
 ```shell
 # install the problematic library
 conda install -y -n base \
     libstdcxx-ng
 
-# confirm that it resulting in a `libstdc++.so.6` being added in conda env
+# confirm that it resulted in a `libstdc++.so.6` being added in conda env
+find / -name 'libstdc++.so.6'
+# /root/miniforge/lib/libstdc++.so.6
+# /root/miniforge/pkgs/libstdcxx-ng-11.2.0-he4da1e4_16/lib/libstdc++.so.6
+# /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+
+# build LightGBM from source
+cd /usr/local/src/LightGBM
+pip uninstall -y lightgbm
+rm -rf ./build
+rm -f ./lib_lightgbm.so
+cd ./python-package
+pip install .
+
+# try loading lightgbm (this will fail)
+python -c "import lightgbm; print(lightgbm.__version__)"
+
+# try loading lightgbm with LD_LIBRARY_PATH set to the same paths
+# referenced in lib_lightgbm.so
+LD_PRELOAD="${LD_PRELOAD}:/usr/lib/x86_64-linux-gnu/libstdc++.so.6" \
+python -c "import lightgbm; print(lightgbm.__version__)"
+```
+
+NOTE: this cannot be done from inside Python. The following code will fail.
+
+```python
+import os
+os.environ["LD_PRELOAD"] = "/usr/lib/x86_64-linux-gnu/libstdc++.so.6"
+import lightgbm
+```
+
+3. Modify `lib_lightgbm.so`'s DT_RPATH tag so that it points at the place where it found `libstdc++.so.6`.
+
+See https://man7.org/linux/man-pages/man3/dlopen.3.html and https://stackoverflow.com/a/20333550/3986677.
+rpath is a way to embed a hint about where to find include dirs in a shared object.
+
+```shell
+cd /root/miniforge/lib/python3.9/site-packages/lightgbm/
+cp lib_lightgbm.so lib_lightgbm2.so
+
+# shows no rpath
+chrpath -l lib_lightgbm2.so
+
+# fails
+python -c \
+    "import ctypes; ctypes.cdll.LoadLibrary('/root/miniforge/lib/python3.9/site-packages/lightgbm/lib_lightgbm.so')"
+
+# patch the rpath
+patchelf --set-rpath '/usr/lib/x86_64-linux-gnu' lib_lightgbm2.so
+
+# shows rpath
+chrpath -l lib_lightgbm2.so
+
+# succeeds!
+python -c \
+    "import ctypes; ctypes.cdll.LoadLibrary('/root/miniforge/lib/python3.9/site-packages/lightgbm/lib_lightgbm2.so')"
+```
+
+4. Inspect `lib_lightgbm.so` to figure out where the compiler found certain libraries, and copy any found from outside `conda` libraries into `conda`'s `lib/` directory.
+
+```shell
+# install the problematic library
+conda install -y -n base \
+    libstdcxx-ng
+
+# confirm that it resulted in a `libstdc++.so.6` being added in conda env
 find / -name 'libstdc++.so.6'
 # /root/miniforge/lib/libstdc++.so.6
 # /root/miniforge/pkgs/libstdcxx-ng-11.2.0-he4da1e4_16/lib/libstdc++.so.6
@@ -196,9 +283,12 @@ python -c "import lightgbm; print(lightgbm.__version__)"
 
 ## Ways LightGBM could mitigate this issue
 
-1. In `setup.py`, after compilation (incl. when using `--precompile`), detect that we're using `conda`, then run `ldd` to check what is linked into `lib_lightgbm.so`, and try to copy into the current conda environment's `lib/` dir any shared objects that are not already found there.
+1. Try setting RPATH at build time to create a "relocatable executable"
+    - either by setting `LDFLAGS` or by using `patchelf` after compilation
+    - see https://nehckl0.medium.com/creating-relocatable-linux-executables-by-setting-rpath-with-origin-45de573a2e98
+2. In `setup.py`, after compilation (incl. when using `--precompile`), detect that we're using `conda`, then run `ldd` to check what is linked into `lib_lightgbm.so`, and try to copy into the current conda environment's `lib/` dir any shared objects that are not already found there.
     - conda patches `sys.prefix` to be the path to the current conda env, so that can be relied on
-2. try-catch library loading, and if an `OSError` about missing libraries is raised, at least raise an informative error describing the workarounds listed above
+3. try-catch library loading, and if an `OSError` about missing libraries is raised, at least raise an informative error describing the workarounds listed above
 
 ## Attempted workarounds that do not work
 

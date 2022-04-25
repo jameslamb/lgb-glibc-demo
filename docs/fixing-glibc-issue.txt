@@ -345,3 +345,11 @@ So I think one solution to this is just to always use a slightly-older version o
 * `run_exports` concept in conda builds: https://docs.conda.io/projects/conda-build/en/latest/resources/define-metadata.html#export-runtime-requirements
 * this looks extremely relevant:
     - https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/manual/faq.html#faq.how_to_set_paths
+* how RPATH works: https://www.qt.io/blog/2011/10/28/rpath-and-runpath
+* where conda seemed to start getting in the way of import paths: https://github.com/conda/conda/issues/10897#issuecomment-914231151
+* this issuue seems relevant
+    - https://github.com/ContinuumIO/anaconda-issues/issues/7052
+* https://en.wikipedia.org/wiki/Rpath describes how to circumvent the `RPATH`
+    - (this could maybe be used by LightGBM's loading?)
+* `patachelf` allows you to moodify the DT_RPATH of a shared object
+    - https://stackoverflow.com/a/20333550/3986677
